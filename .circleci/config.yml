@@ -1,0 +1,15 @@
+version: 2.1
+jobs:
+  test:
+    steps:
+      - checkout
+      - install dependencies
+      - run lint
+      - run unit tests
+      - run integration tests
+      - run secret scan
+
+  docker-build:
+    steps:
+      - checkout
+      - build Docker image

@@ -1,0 +1,51 @@
+services:
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: leaderboard
+      POSTGRES_USER: leaderboard
+      POSTGRES_PASSWORD: leaderboard
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+
+  migrate:
+    image: postgres:16
+    depends_on:
+      - postgres
+    volumes:
+      - ./migrations:/migrations
+    environment:
+      PGPASSWORD: leaderboard
+    command: >
+      sh -c "
+      until pg_isready -h postgres -U leaderboard -d leaderboard;
+      do
+        echo 'Waiting for PostgreSQL...';
+        sleep 2;
+      done;
+      for file in /migrations/*.sql;
+      do
+        echo Running $$file;
+        psql -h postgres -U leaderboard -d leaderboard -f $$file;
+      done
+      "
+
+  app:
+    build: .
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgresql://leaderboard:leaderboard@postgres:5432/leaderboard
+      REDIS_URL: redis://redis:6379/0
+
+volumes:
+  postgres_data:
