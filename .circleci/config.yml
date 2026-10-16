@@ -1,15 +1,72 @@
 version: 2.1
+
 jobs:
   test:
+    docker:
+      - image: cimg/python:3.12
+      - image: cimg/postgres:16.0
+        environment:
+          POSTGRES_DB: leaderboard
+          POSTGRES_USER: leaderboard
+          POSTGRES_PASSWORD: leaderboard
+      - image: cimg/redis:7.0
+    environment:
+      DATABASE_URL: postgresql://leaderboard:leaderboard@localhost:5432/leaderboard
+      REDIS_URL: redis://localhost:6379/0
     steps:
       - checkout
-      - install dependencies
-      - run lint
-      - run unit tests
-      - run integration tests
-      - run secret scan
+
+      - run:
+          name: Install dependencies
+          command: |
+            python -m pip install --upgrade pip
+            pip install -r requirements.txt
+            pip install pytest-cov ruff
+
+      - run:
+          name: Wait for PostgreSQL
+          command: |
+            for i in $(seq 1 30); do
+              pg_isready -h localhost -p 5432 && break
+              sleep 2
+            done
+            pg_isready -h localhost -p 5432
+
+      - run:
+          name: Run database migrations
+          command: |
+            for file in migrations/*.sql; do
+              PGPASSWORD=leaderboard psql \
+                -h localhost -U leaderboard -d leaderboard \
+                -v ON_ERROR_STOP=1 -f "$file"
+            done
+
+      - run:
+          name: Lint
+          command: ruff check app tests
+
+      - run:
+          name: Unit tests with coverage
+          command: python -m pytest tests/test_scoring.py --cov=app.scoring --cov-report=term-missing
+
+      - run:
+          name: Integration tests
+          command: python -m pytest tests/test_integration.py -v
 
   docker-build:
+    docker:
+      - image: cimg/base:stable
     steps:
       - checkout
-      - build Docker image
+      - setup_remote_docker
+      - run:
+          name: Build Docker image
+          command: docker build -t game-leaderboard-python:ci .
+
+workflows:
+  build-and-test:
+    jobs:
+      - test
+      - docker-build:
+          requires:
+            - test
