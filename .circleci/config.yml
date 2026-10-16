@@ -1,3 +1,4 @@
+
 version: 2.1
 
 jobs:
@@ -6,10 +7,10 @@ jobs:
       - image: cimg/python:3.12
       - image: cimg/postgres:16.0
         environment:
-          POSTGRES_DB: leaderboard
           POSTGRES_USER: leaderboard
           POSTGRES_PASSWORD: leaderboard
-      - image: cimg/redis:7.0
+          POSTGRES_DB: leaderboard
+      - image: cimg/redis:7.2
     environment:
       DATABASE_URL: postgresql://leaderboard:leaderboard@localhost:5432/leaderboard
       REDIS_URL: redis://localhost:6379/0
@@ -19,54 +20,97 @@ jobs:
       - run:
           name: Install dependencies
           command: |
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client redis-tools
             python -m pip install --upgrade pip
             pip install -r requirements.txt
-            pip install pytest-cov ruff
-
-      - run:
-          name: Wait for PostgreSQL
-          command: |
-            for i in $(seq 1 30); do
-              pg_isready -h localhost -p 5432 && break
-              sleep 2
-            done
-            pg_isready -h localhost -p 5432
-
-      - run:
-          name: Run database migrations
-          command: |
-            for file in migrations/*.sql; do
-              PGPASSWORD=leaderboard psql \
-                -h localhost -U leaderboard -d leaderboard \
-                -v ON_ERROR_STOP=1 -f "$file"
-            done
+            pip install pytest pytest-cov ruff
 
       - run:
           name: Lint
-          command: ruff check app tests
+          command: python -m ruff check app tests
 
       - run:
-          name: Unit tests with coverage
+          name: Unit tests
           command: python -m pytest tests/test_scoring.py --cov=app.scoring --cov-report=term-missing
+
+      - run:
+          name: Wait for services
+          command: |
+            for i in $(seq 1 30); do
+              if pg_isready -h localhost -U leaderboard -d leaderboard; then
+                break
+              fi
+              sleep 2
+            done
+            pg_isready -h localhost -U leaderboard -d leaderboard
+            redis-cli -h localhost ping
+
+      - run:
+          name: Run migrations
+          command: |
+            for file in migrations/*.sql; do
+              PGPASSWORD=leaderboard psql -v ON_ERROR_STOP=1 -h localhost -U leaderboard -d leaderboard -f "$file"
+            done
 
       - run:
           name: Integration tests
           command: python -m pytest tests/test_integration.py -v
 
-  docker-build:
+      - run:
+          name: Secret scan
+          command: |
+            pip install detect-secrets
+            detect-secrets scan --all-files --baseline .secrets.baseline
+
+  docker-publish:
     docker:
       - image: cimg/base:stable
     steps:
       - checkout
       - setup_remote_docker
+
       - run:
-          name: Build Docker image
-          command: docker build -t game-leaderboard-python:ci .
+          name: Log in to Docker Hub
+          command: |
+            echo "$DOCKERHUB_PASSWORD" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+
+      - run:
+          name: Build and publish Docker image
+          command: |
+            IMAGE="arnab1108/game-leaderboard-python"
+
+            case "$CIRCLE_BRANCH" in
+              main)
+                TAG="qa"
+                ;;
+              staging)
+                TAG="stage"
+                ;;
+              prod)
+                TAG="prod"
+                ;;
+              *)
+                echo "Publishing is not enabled for branch: $CIRCLE_BRANCH"
+                exit 1
+                ;;
+            esac
+
+            docker build \
+              -t "$IMAGE:$TAG" \
+              -t "$IMAGE:$CIRCLE_SHA1" \
+              .
+
+            docker push "$IMAGE:$TAG"
+            docker push "$IMAGE:$CIRCLE_SHA1"
 
 workflows:
-  build-and-test:
+  main-pipeline:
     jobs:
       - test
-      - docker-build:
+      - docker-publish:
           requires:
             - test
+          filters:
+            branches:
+              only: /^(main|staging|prod)$/
