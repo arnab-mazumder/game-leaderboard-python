@@ -16,7 +16,7 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
     steps:
       - checkout
-    
+
       - run:
           name: Install dependencies
           command: |
@@ -38,16 +38,19 @@ jobs:
           name: Wait for services
           command: |
             for i in $(seq 1 30); do
-              pg_isready -h localhost -U leaderboard -d leaderboard && break
+              if pg_isready -h localhost -U leaderboard -d leaderboard; then
+                break
+              fi
               sleep 2
             done
+            pg_isready -h localhost -U leaderboard -d leaderboard
             redis-cli -h localhost ping
 
       - run:
           name: Run migrations
           command: |
             for file in migrations/*.sql; do
-              PGPASSWORD=leaderboard psql -h localhost -U leaderboard -d leaderboard -f "$file"
+              PGPASSWORD=leaderboard psql -v ON_ERROR_STOP=1 -h localhost -U leaderboard -d leaderboard -f "$file"
             done
 
       - run:
@@ -58,25 +61,56 @@ jobs:
           name: Secret scan
           command: |
             pip install detect-secrets
-            detect-secrets scan --all-files
+            detect-secrets scan --all-files --baseline .secrets.baseline
 
-  docker-build:
+  docker-publish:
     docker:
       - image: cimg/base:stable
     steps:
       - checkout
       - setup_remote_docker
+
       - run:
-          name: Build Docker image
-          command: docker build -t game-leaderboard-python:ci .
+          name: Log in to Docker Hub
+          command: |
+            echo "$DOCKERHUB_PASSWORD" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+
+      - run:
+          name: Build and publish Docker image
+          command: |
+            IMAGE="arnab1108/game-leaderboard-python"
+
+            case "$CIRCLE_BRANCH" in
+              main)
+                TAG="qa"
+                ;;
+              staging)
+                TAG="stage"
+                ;;
+              prod)
+                TAG="prod"
+                ;;
+              *)
+                echo "Publishing is not enabled for branch: $CIRCLE_BRANCH"
+                exit 1
+                ;;
+            esac
+
+            docker build \
+              -t "$IMAGE:$TAG" \
+              -t "$IMAGE:$CIRCLE_SHA1" \
+              .
+
+            docker push "$IMAGE:$TAG"
+            docker push "$IMAGE:$CIRCLE_SHA1"
 
 workflows:
   main-pipeline:
     jobs:
       - test
-      - docker-build:
+      - docker-publish:
           requires:
             - test
           filters:
             branches:
-              only: main
+              only: /^(main|staging|prod)$/
