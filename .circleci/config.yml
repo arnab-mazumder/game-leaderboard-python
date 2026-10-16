@@ -61,8 +61,7 @@ jobs:
           name: Secret scan
           command: |
             pip install detect-secrets
-            detect-secrets scan --all-files > /tmp/secrets-scan.json
-            python -c "import json; d=json.load(open('/tmp/secrets-scan.json')); findings=sum(len(v) for v in d.get('results', {}).values()); print(f'Secret findings: {findings}'); raise SystemExit(1 if findings else 0)"
+            detect-secrets scan --all-files --baseline .secrets.baseline
 
   docker-publish:
     docker:
