@@ -1,0 +1,37 @@
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: leaderboard-migrate
+  namespace: stage
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: postgres:16
+          env:
+            - name: PGPASSWORD
+              value: leaderboard
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h postgres -U leaderboard -d leaderboard; do
+                echo "Waiting for PostgreSQL..."
+                sleep 2
+              done
+              for file in /migrations/*.sql; do
+                echo "Running $file"
+                psql -v ON_ERROR_STOP=1 -h postgres -U leaderboard -d leaderboard -f "$file" || exit 1
+              done
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+      volumes:
+        - name: migrations
+          configMap:
+            name: leaderboard-migrations
